@@ -10,7 +10,7 @@ Key technologies:
 - httpx for asynchronous HTTP requests
 - SQLite for local token storage
 - OAuth2 PKCE flow for secure authentication
-
+![](https://img.unclemusclez.com/u/VHQHRy.gif)
 ## Features
 
 - **Multi-Character Support**: Authenticate and manage multiple EVE Online characters, with tokens stored per character.
