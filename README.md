@@ -123,3 +123,15 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE.md) for de
 ---
 
 For more details on EVE Online ESI, visit the [official documentation](https://developers.eveonline.com/api-explorer). For FastMCP, refer to [FastMCP Docs](https://fastmcp.cloud/docs).
+
+## Update Notes
+
+- Updated `config.py.example`:
+  - Changed `CALLBACK_URL` to a public callback endpoint that can be reverse-proxied to the local callback server.
+  - Clarified that `CLIENT_SECRET` is still used in `auth_with_code` for Basic authentication.
+- Updated `esi.py`:
+  - Added a built-in local OAuth callback HTTP server that starts automatically in a daemon thread and listens on port `8080`.
+  - Added support for `/authorize` to redirect to EVE SSO authorization and `/callback` to handle the authorization code callback.
+  - Improved auth code handling: automatically exchange the code for tokens, fetch character info, save it to the database, and set the default character.
+  - Added an `auth_with_code` tool function to allow manual login binding using the `code` parameter from the browser redirect.
+  - Simplified dependency and auth logic by removing no longer used PKCE generation and old OAuth proxy code.
