@@ -100,7 +100,7 @@ async with Client("stdio") as client:  # 或 HTTP 传输
 - **OAuth 常量**：
   - `CLIENT_ID` 和 `CLIENT_SECRET`：替换为您的 EVE Online 开发者应用凭证。
   - `SCOPES`：ESI 权限范围列表；根据需要自定义。
-  - `CALLBACK_URL`：SSO 的本地回调地址（默认：`http://localhost:8000/auth/callback`）。
+  - `CALLBACK_URL`：SSO 的本地回调地址（默认：`http://localhost:8080/auth/callback`）。
 
 - **兼容性日期**：设置为 `2025-08-26` 以保持向前兼容；根据 ESI 更新进行调整。
 
@@ -109,7 +109,7 @@ async with Client("stdio") as client:  # 或 HTTP 传输
 ## 故障排除
 
 - **令牌错误**：检查日志中的刷新失败信息；确保 `CLIENT_ID` 有效。
-- **SSO 问题**：确认浏览器可以打开并且回调端口（8000）未被占用。
+- **SSO 问题**：确认浏览器可以打开并且回调端口（8080）未被占用。
 - **未授权 (401)**：确保已添加角色并具有所需权限范围（例如 `esi-wallet.read_character_wallet.v1`）。
 - **未找到令牌**：请先运行 `add_character` 工具。
 
@@ -136,3 +136,5 @@ async with Client("stdio") as client:  # 或 HTTP 传输
   - 优化授权码处理流程：回调时自动交换令牌、获取角色信息、保存到数据库并设置默认角色。
   - 新增 `auth_with_code` 工具函数，支持手动提供浏览器回调中的 `code` 参数完成登录绑定。
   - 简化依赖与逻辑，去除不再使用的 PKCE 生成和旧 OAuth 代理代码。
+  - 增加了 OAuth 回调的 `state` 校验，防止 CSRF 和重放。
+  - 在写入 SQLite 前对 access token 和 refresh token 加密。

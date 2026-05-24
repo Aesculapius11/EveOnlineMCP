@@ -99,7 +99,7 @@ You can query the DB manually with SQLite tools for inspection.
 - **OAuth Constants**:
   - `CLIENT_ID` and `CLIENT_SECRET`: Replace with your EVE Online developer app credentials.
   - `SCOPES`: List of ESI scopes; customize as needed.
-  - `CALLBACK_URL`: Local callback for SSO (default: http://localhost:8000/auth/callback).
+  - `CALLBACK_URL`: Local callback for SSO (default: http://localhost:8080/auth/callback).
 
 - **Compatibility Date**: Set to "2025-08-26" for future-proofing; update as per ESI changes.
 
@@ -108,7 +108,7 @@ You can query the DB manually with SQLite tools for inspection.
 ## Troubleshooting
 
 - **Token Errors**: Check logs for refresh failures; ensure CLIENT_ID is valid.
-- **SSO Issues**: Verify browser opens and callback port (8000) is free.
+- **SSO Issues**: Verify browser opens and callback port (8080) is free.
 - **Unauthorized (401)**: Ensure character is added and has required scopes (e.g., `esi-wallet.read_character_wallet.v1`).
 - **No Tokens Found**: Run `add_character` tool first.
 
@@ -135,3 +135,5 @@ For more details on EVE Online ESI, visit the [official documentation](https://d
   - Improved auth code handling: automatically exchange the code for tokens, fetch character info, save it to the database, and set the default character.
   - Added an `auth_with_code` tool function to allow manual login binding using the `code` parameter from the browser redirect.
   - Simplified dependency and auth logic by removing no longer used PKCE generation and old OAuth proxy code.
+  - Added state validation for the OAuth callback flow.
+  - Encrypted access and refresh tokens before saving to SQLite.
