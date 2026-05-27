@@ -11,10 +11,8 @@ DB_PATH = ESI_MCP_DIR / "characters.db"
 # OAuth constants
 METADATA_URL = "https://login.eveonline.com/.well-known/oauth-authorization-server"
 CLIENT_ID = "<your_client_id>"
-CLIENT_SECRET = "<your_client_secret>"  # Not used in PKCE flow
-CALLBACK_URL = "http://localhost:8000/auth/callback"
-CALLBACK_PORT = 8000
-CALLBACK_PATH = "/auth/callback"
+CLIENT_SECRET = "<your_client_secret>"  # Used in auth_with_code (Basic auth)
+CALLBACK_URL = "https://<your_callback_domain>/callback"  # Public callback endpoint, reverse-proxied to your callback server
 COMPATIBILITY_DATE = "2025-08-26"
 
 # Scopes from token verifier
