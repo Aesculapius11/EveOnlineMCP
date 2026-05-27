@@ -18,7 +18,7 @@ from fastmcp import FastMCP
 
 from fastmcp.server import Context
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from config import *
@@ -34,19 +34,16 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-# 方便调试时追踪本地路径和日志文件位置
 logger.debug(f"HOME_DIR: {HOME_DIR}")
 logger.debug(f"ESI_MCP_DIR: {ESI_MCP_DIR}")
 logger.debug(f"ESI_MCP_DIR exists: {ESI_MCP_DIR.exists()}")
 
-# 用于加密保存 token 的密钥文件，以及 OAuth state 的有效期
 FERNET_KEY_PATH = ESI_MCP_DIR / "master.key"
 STATE_TTL_SECONDS = 300
 PENDING_STATES = {}
 PENDING_STATE_LOCK = threading.Lock()
 
 
-# 加载已有的 Fernet 密钥；如果没有则生成一个仅当前用户可读写的密钥文件
 def _load_or_create_fernet() -> Fernet:
     env_key = os.environ.get("ESI_MCP_FERNET_KEY")
     if env_key:
@@ -68,7 +65,6 @@ def _load_or_create_fernet() -> Fernet:
 FERNET = _load_or_create_fernet()
 
 
-# 判断某个值是否已经是加密后的字符串
 def _is_encrypted(value):
     if value is None:
         return False
@@ -79,7 +75,6 @@ def _is_encrypted(value):
         return False
 
 
-# 只有在未加密时才加密，避免重复加密导致读取失败
 def _encrypt_if_needed(value):
     if value is None:
         return None
@@ -88,7 +83,6 @@ def _encrypt_if_needed(value):
     return FERNET.encrypt(value.encode()).decode()
 
 
-# 将存储在数据库中的密文解析回明文 token
 def _decrypt_value(value):
     if value is None:
         return None
@@ -99,14 +93,12 @@ def _decrypt_value(value):
     return FERNET.decrypt(value.encode()).decode()
 
 
-# 保存本次授权请求的 state，用来防止 OAuth 回调被替换或重放
 def _store_state(state: str):
     with PENDING_STATE_LOCK:
         PENDING_STATES[state] = time.time()
         _purge_expired_states_locked()
 
 
-# 回调到达时消费并删除对应的 state，确保一次性使用
 def _consume_state(state: str) -> bool:
     with PENDING_STATE_LOCK:
         _purge_expired_states_locked()
@@ -116,7 +108,6 @@ def _consume_state(state: str) -> bool:
         return True
 
 
-# 清掉过期的 state，避免内存里长期积累
 def _purge_expired_states_locked():
     now = time.time()
     expired = [state for state, created_at in PENDING_STATES.items() if now - created_at > STATE_TTL_SECONDS]
@@ -125,7 +116,6 @@ def _purge_expired_states_locked():
 
 
 # Initialize SQL database
-# characters 表保存角色信息和 token，settings 表保存默认角色等配置
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -149,8 +139,24 @@ def init_db():
 
 init_db()
 
+
+def migrate_plaintext_tokens():
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT character_id, access_token, refresh_token FROM characters").fetchall()
+        for character_id, access_token, refresh_token in rows:
+            new_access_token = _encrypt_if_needed(access_token)
+            new_refresh_token = _encrypt_if_needed(refresh_token)
+            if new_access_token != access_token or new_refresh_token != refresh_token:
+                conn.execute(
+                    "UPDATE characters SET access_token = ?, refresh_token = ? WHERE character_id = ?",
+                    (new_access_token, new_refresh_token, character_id),
+                )
+        conn.commit()
+
+
+migrate_plaintext_tokens()
+
 # SQL helper functions
-# 这里统一在写入前加密、读取时解密，避免数据库里直接落明文 token
 def save_character(character_id, name, scopes, access_token=None, refresh_token=None, token_expiry=None):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -161,7 +167,6 @@ def save_character(character_id, name, scopes, access_token=None, refresh_token=
         conn.commit()
 
 
-# 读取所有角色，返回时把 token 解密成可用明文
 def get_characters():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.execute("SELECT * FROM characters")
@@ -175,7 +180,6 @@ def get_characters():
         return records
 
 
-# 读取单个角色的 token 信息，供请求钩子和刷新逻辑使用
 def get_character_tokens(character_id):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.execute("""
@@ -189,7 +193,6 @@ def get_character_tokens(character_id):
     return _decrypt_value(access_token), _decrypt_value(refresh_token), expiry_str
 
 
-# 刷新 token 后，把新 token 重新加密存回数据库
 def update_character_tokens(character_id, access_token, refresh_token, token_expiry):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -200,7 +203,6 @@ def update_character_tokens(character_id, access_token, refresh_token, token_exp
         conn.commit()
 
 
-# 删除角色；如果删除的是默认角色，也同步清掉默认设置
 def delete_character(character_id):
     with sqlite3.connect(DB_PATH) as conn:
         # Check if this is the default character
@@ -230,11 +232,11 @@ def set_default_character_id(character_id):
 
 
 # ── Background OAuth callback server ──────────────────────────
-# 这个本地 HTTP 服务负责接收 EVE SSO 的回调，并自动完成账号绑定。
-# 之所以用同步函数，是因为回调线程里不能直接 await 异步逻辑。
+# Replaces the external eve_callback_server.py (8080)
+# Auto-starts in a daemon thread when this module loads.
 
 def _exchange_code_sync(code: str) -> str:
-    """同步交换 code，供回调线程调用。"""
+    """Synchronous token exchange for the callback server thread."""
     try:
         auth_str = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
         with httpx.Client() as sync_client:
@@ -253,22 +255,18 @@ def _exchange_code_sync(code: str) -> str:
             at = td["access_token"]
             rt = td.get("refresh_token", "")
             ei = td.get("expires_in", 1199)
-
-            # 从 JWT 中拿到角色 ID 和名字，便于保存本地角色记录
             parts = at.split(".")
             payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
             sub = payload.get("sub", "")
             cid = int(sub.split(":")[-1]) if ":" in sub else 0
             cname = payload.get("name", "Unknown")
-
-            # 再额外请求一次 ESI，拿到更完整的角色名称
+            # Fetch full character name
             cr = sync_client.get(f"https://esi.evetech.net/latest/characters/{cid}/",
                 headers={"Authorization": f"Bearer {at}"})
             if cr.status_code == 200:
                 cname = cr.json().get("name", cname)
-
-            # 保存 token，过期时间按当前时间 + expires_in 计算
-            token_expiry = (datetime.utcnow() + timedelta(seconds=ei)).isoformat()
+            # Save to DB
+            token_expiry = (datetime.now(timezone.utc) + timedelta(seconds=ei)).isoformat()
             save_character(cid, cname, " ".join(SCOPES), at, rt, token_expiry)
             if not get_default_character_id():
                 set_default_character_id(cid)
@@ -323,7 +321,7 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
                 "<p><a href='/authorize'>Start authorization</a></p>"
             )
         elif parsed.path == "/authorize":
-            # 进入授权页前先生成新的 state，并保存到内存中，供 /callback 校验
+            # Build auth URL with all scopes and redirect
             state = secrets.token_urlsafe(32)
             _store_state(state)
             auth_params = {
@@ -367,8 +365,7 @@ def _start_callback_server():
 _start_callback_server()
 
 
-# 下面是 ESI 请求客户端的配置。
-# 这里不写死 Authorization，而是根据请求路径动态补上当前角色的 token。
+# Headers for the backend client (no static Authorization; added per-request)
 headers = {
     "Accept-Language": "en",
     "X-Compatibility-Date": "2025-08-26",
@@ -387,23 +384,20 @@ client = httpx.AsyncClient(
 # Define request hook to add authorization dynamically
 async def add_auth_header(request):
     path = request.url.path
-    # 只给角色相关接口和公司相关接口补 Authorization
+    # Match /characters/{id}/ or /corporations/{id}/ paths
     match = re.match(r'/characters/(\d+)/', path)
     if not match:
         match = re.match(r'/corporations/(\d+)/', path)
     if match:
         path_id = int(match.group(1))
         if '/characters/' in path:
-            # 角色接口直接使用路径里的角色 ID
             character_id = path_id
         else:
-            # 公司接口没有显式 ID，改用默认角色
+            # For corp endpoints, use default character
             character_id = get_default_character_id()
             if not character_id:
                 logger.error("No default character for corp endpoint")
                 return
-
-        # 读取当前角色的 token，并在过期时自动刷新
         token_data = get_character_tokens(character_id)
         if not token_data:
             logger.error(f"No tokens for character {character_id}")
@@ -412,13 +406,13 @@ async def add_auth_header(request):
         if not access_token:
             logger.error(f"No access token for character {character_id}")
             return
-
+        # Check expiry
         try:
             if expiry_str is None:
                 raise ValueError("No expiration time")
             expiry = datetime.fromisoformat(expiry_str)
-            if expiry < datetime.utcnow():
-                # 过期时走 refresh token 流程，拿新 access token
+            if expiry < datetime.now(timezone.utc):
+                # Refresh token
                 async with httpx.AsyncClient() as temp_client:
                     token_params = {
                         "grant_type": "refresh_token",
@@ -433,7 +427,7 @@ async def add_auth_header(request):
                     access_token = token_data["access_token"]
                     refresh_token = token_data.get("refresh_token", refresh_token)  # May rotate
                     expires_in = token_data["expires_in"]
-                    expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+                    expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
                     expiry_str = expiry.isoformat()
                     update_character_tokens(character_id, access_token, refresh_token, expiry_str)
                 logger.info(f"Refreshed token for character {character_id}")
@@ -515,20 +509,19 @@ async def auth_with_code(code: str) -> str:
             at = td["access_token"]
             rt = td.get("refresh_token", "")
             ei = td.get("expires_in", 1199)
-
-            # 从 JWT 中解析角色 ID，再额外请求一次 ESI 获取完整角色名
+            # Get character info from JWT
             parts = at.split(".")
             payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
             sub = payload.get("sub", "")
             cid = int(sub.split(":")[-1]) if ":" in sub else 0
             cname = payload.get("name", "Unknown")
+            # Get full character info
             cr = await client.get(f"https://esi.evetech.net/latest/characters/{cid}/",
                 headers={"Authorization": f"Bearer {at}"})
             if cr.status_code == 200:
                 cname = cr.json().get("name", cname)
-
-            # 保存角色与 token，如果还没有默认角色则设为默认
-            token_expiry = (datetime.utcnow() + timedelta(seconds=ei)).isoformat()
+            # Save
+            token_expiry = (datetime.now(timezone.utc) + timedelta(seconds=ei)).isoformat()
             save_character(cid, cname, " ".join(SCOPES), at, rt, token_expiry)
             if not get_default_character_id():
                 set_default_character_id(cid)
