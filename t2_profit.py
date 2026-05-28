@@ -135,6 +135,7 @@ def get_blueprint(product_tid):
         "adjustedPrice": details.get("adjustedPrice", 0),
         "probability": details.get("probability", 0.34),
         "maxRuns": details.get("maxProductionLimit", 10),
+        "productQty": details.get("productQuantity", 1),  # 每run产出数量(弹药类>1)
         "mfg_time": details.get("times", {}).get("1", 0),
         "materials": am.get("1", []),       # 制造材料
         "inv_materials": am.get("8", []),   # 发明材料
@@ -335,7 +336,10 @@ def calculate(product_name_or_tid, me=DEFAULT_ME, runs=DEFAULT_RUNS,
             inv_per_run = (inv_cost_per_attempt * attempts_needed) / runs
 
     # ---- 汇总 ----
-    total_cost_per_unit = (total_mat_cost + total_mfg_fee) / runs + inv_per_run
+    product_qty = bp.get("productQty", 1)  # 每run产出数量
+    total_units = runs * product_qty
+    inv_per_unit = inv_per_run / product_qty if product_qty > 0 else inv_per_run
+    total_cost_per_unit = (total_mat_cost + total_mfg_fee) / total_units + inv_per_unit
     product_price = prices.get(product_tid, {})
     sell_price = product_price.get("sell_min") or 0
     buy_price = product_price.get("buy_max") or 0
@@ -354,6 +358,8 @@ def calculate(product_name_or_tid, me=DEFAULT_ME, runs=DEFAULT_RUNS,
         "invention_probability": bp["probability"],
         "adjustedPrice": bp["adjustedPrice"],
         "mfg_time_seconds": bp["mfg_time"],
+        "product_qty": product_qty,
+        "total_units": total_units,
         "materials": mat_details,
         "mfg_fee_per_run": mfg_fee_per_run,
         "invention": inv_details,
@@ -376,7 +382,10 @@ def calculate(product_name_or_tid, me=DEFAULT_ME, runs=DEFAULT_RUNS,
 def format_result(r):
     lines = []
     lines.append(f"{'═' * 55}")
-    lines.append(f"  {r['product_name']}  (ME={r['me']}, {r['runs']} runs)")
+    qty_info = f", {r['product_qty']}/run" if r.get('product_qty', 1) > 1 else ""
+    lines.append(f"  {r['product_name']}  (ME={r['me']}, {r['runs']} runs{qty_info})")
+    if r.get('total_units', 0) > r['runs']:
+        lines.append(f"  总产出: {r['total_units']:,} 个")
     lines.append(f"  制造星系: {r['system']} ({r['cost_index']*100:.2f}%)")
     lines.append(f"{'═' * 55}")
 
@@ -409,9 +418,14 @@ def format_result(r):
     lines.append(f"\n  {profit_emoji} 每只净利润: {r['profit']:+,.0f}")
     lines.append(f"  📊 利润率: {r['margin']:+.1f}%")
 
-    # 10 run 总利润
-    total_profit = r["profit"] * r["runs"]
-    lines.append(f"  📦 {r['runs']}run 总利润: {total_profit:+,.0f}")
+    # 总利润
+    total_units = r.get('total_units', r['runs'])
+    total_profit = r['profit'] * total_units
+    if total_units > r['runs']:
+        lines.append(f"  📦 {r['runs']}run × {r['product_qty']:,}/run = {total_units:,} 个")
+        lines.append(f"  📦 总利润: {total_profit:+,.0f}")
+    else:
+        lines.append(f"  📦 {r['runs']}run 总利润: {total_profit:+,.0f}")
     lines.append(f"{'═' * 55}")
 
     return "\n".join(lines)
