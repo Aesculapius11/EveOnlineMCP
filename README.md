@@ -137,3 +137,54 @@ For more details on EVE Online ESI, visit the [official documentation](https://d
   - Simplified dependency and auth logic by removing no longer used PKCE generation and old OAuth proxy code.
   - Added state validation for the OAuth callback flow.
   - Encrypted access and refresh tokens before saving to SQLite.
+---
+
+## T2 制造利润计算器
+
+`t2_profit.py` — 自动计算 T2 物品制造利润的命令行工具。
+
+### 功能
+
+- 自动获取蓝图材料 (fuzzwork API)
+- 自动获取 Jita 4-4 实时买卖价 (ESI)
+- 自动获取星系制造成本指数 (ESI)
+- 计算发明成功率与摊销
+- 支持批量对比多个物品
+
+### 用法
+
+```bash
+# 单个物品
+python3 t2_profit.py "Wasp II"
+
+# 多个物品对比
+python3 t2_profit.py "425mm Railgun II" "Nova Rage" "Warden II"
+
+# 自定义参数
+python3 t2_profit.py --me 4 --runs 20 --system jita "Hornet II"
+
+# 用买单收材料（更低估成本）
+python3 t2_profit.py --buy-mode buy "425mm Railgun II"
+
+# 不计算发明摊销
+python3 t2_profit.py --no-invention "425mm Railgun II"
+
+# JSON 输出
+python3 t2_profit.py --json "Wasp II"
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--me` | 2 | 材料效率 |
+| `--runs` | 10 | 制造次数 |
+| `--system` | haajinen | 制造星系 (haajinen/jita/dodixie/rens/amarr) |
+| `--buy-mode` | sell | `sell`=按卖价买材料, `buy`=按买单收材料 |
+| `--no-invention` | - | 不计算发明摊销 |
+| `--json` | - | JSON 格式输出 |
+
+### 依赖
+
+- Python 3.8+
+- 标准库 (无额外依赖)
