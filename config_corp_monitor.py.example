@@ -1,0 +1,92 @@
+"""
+EVE Corp Monitor 配置模板
+复制为 config_corp_monitor.py 并填入你的实际值
+"""
+
+import os
+
+# ═══════════════════ Redis ═══════════════════════
+REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+REDIS_PASS = os.environ.get("REDIS_PASS", "your_redis_password")
+REDIS_DB = int(os.environ.get("REDIS_DB", "0"))
+REDIS_PREFIX = "eve:corp:monitor"
+
+# ═══════════════════ EVE SSO ═══════════════════════
+CLIENT_ID = os.environ.get("EVE_CLIENT_ID", "your_client_id")
+CALLBACK_URL = os.environ.get("EVE_CALLBACK_URL", "http://localhost:8080/callback")
+DB_PATH = os.path.expanduser(os.environ.get("EVE_DB_PATH", "~/.esi-mcp/characters.db"))
+FERNET_KEY_PATH = os.path.expanduser(os.environ.get("EVE_FERNET_KEY", "~/.esi-mcp/master.key"))
+COMPAT_DATE = "2025-08-26"
+
+# ═══════════════════ Corp / Characters ═══════════════
+CORP_ID = 0           # 你的军团 ID
+CHAR_MAIN = 0         # 主角色 ID (工业)
+CHAR_MARKET = 0       # 市场角色 ID
+
+# ═══════════════════ Locations ═══════════════════════
+THE_FORGE = 10000002
+JITA_SYSTEM = 30000142
+JITA_STATION = 60003760
+HAAJINEN_STATION = 60002317
+HAAJINEN_SYSTEM = 30001424
+
+# ═══════════════════ Divisions ═══════════════════════
+# 军团机库分库名称
+DIVISIONS = [
+    "CorpSAG1", "CorpSAG2", "CorpSAG3", "CorpSAG4",
+    "CorpSAG6", "CorpSAG7", "CorpDeliveries"
+]
+
+# CorpSAG1 内的容器 ID (用于定位蓝图库)
+CORPSAG_CONTAINER = 0
+OFFICE_FOLDER = 0
+
+# ═══════════════════ Items to Track ═══════════════════
+# 需要实时查价的物品 (type_id: name)
+# 按你的产业需求自定义
+
+TRACKED_ITEMS = {
+    # Datacores (发明用)
+    20418: "Datacore - Electronic Engineering",
+    20423: "Datacore - Nuclear Physics",
+    20419: "Datacore - Graviton Physics",
+    20424: "Datacore - Mechanical Engineering",
+    20411: "Datacore - High Energy Physics",
+    20421: "Datacore - Amarrian Starship Engineering",
+    20416: "Datacore - Nanite Engineering",
+    20413: "Datacore - Laser Physics",
+    20415: "Datacore - Molecular Engineering",
+    25887: "Datacore - Caldari Starship Engineering",
+    # T2 Components
+    9848: "Robotics",
+    16670: "Crystalline Carbonide",
+    11695: "Plasma Pulse Generator",
+    11688: "Particle Accelerator Unit",
+    11693: "Graviton Pulse Generator",
+    11692: "Nuclear Pulse Generator",
+    9834: "Guidance Systems",
+    81350: "Kerr Sequencer",
+    11690: "Superconductor Rails",
+    9830: "Rocket Fuel",
+    # Raw minerals
+    40: "Megacyte",
+    35: "Pyerite",
+    11399: "Morphite",
+    # 示例成品 (根据你的产品线调整)
+    2436: "Wasp II",
+    2466: "Hornet II",
+    28209: "Warden II",
+}
+
+# 需要查买单的物品 (材料类，子集)
+BUY_ITEMS = {
+    20418, 20423, 20419, 20424, 20411, 20421, 20416, 20413, 20415,
+    25887, 9848, 16670, 11695, 11688, 11693, 11692, 9834, 81350,
+    11690, 9830, 40, 35, 11399,
+}
+
+# 需要查卖价的物品 (成品类)
+SELL_ITEMS = {
+    2436, 2466, 28209,
+}

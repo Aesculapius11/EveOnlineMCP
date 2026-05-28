@@ -188,3 +188,56 @@ python3 t2_profit.py --json "Wasp II"
 
 - Python 3.8+
 - 标准库 (无额外依赖)
+
+## EVE Corp Monitor
+
+`eve_corp_monitor.py` — 定时抓取军团数据写入 Redis，供其他工具/机器人使用。
+
+### 功能
+
+- 军团机库物资按分库聚合
+- Jita 4-4 常用物品实时买卖价
+- 军团工业任务列表 (active + ready)
+- 军团市场订单 (卖单 + 买单)
+- 星系制造成本指数
+
+### 配置
+
+```bash
+# 复制配置模板
+cp config_corp_monitor.py.example config_corp_monitor.py
+
+# 编辑填入你的实际值
+# - Redis 连接信息
+# - EVE SSO Client ID
+# - 军团 ID / 角色 ID
+# - 需要追踪的物品清单
+```
+
+### 依赖
+
+```bash
+pip install httpx redis cryptography
+```
+
+### 用法
+
+```bash
+# 直接运行
+python3 eve_corp_monitor.py
+
+# 配合 cron 每 15 分钟运行
+# */15 * * * * cd /path/to/EveOnlineMCP && python3 eve_corp_monitor.py >> /var/log/eve-monitor.log 2>&1
+```
+
+### Redis Keys
+
+```
+eve:corp:monitor:assets:{Division}     — 机库物资按分库
+eve:corp:monitor:market:prices         — 全量物品价格
+eve:corp:monitor:market:items:{type_id}— 单物品快速查找
+eve:corp:monitor:industry:jobs         — 工业任务列表
+eve:corp:monitor:orders                — 市场订单
+eve:corp:monitor:assets:summary        — 机库概览
+eve:corp:monitor:cost_index:haajinen   — 星系成本指数
+```

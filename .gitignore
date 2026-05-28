@@ -1,7 +1,8 @@
 .env
 .venv
 __pycache__
-config.py*.db
+config.py
+config_corp_monitor.py
+*.db
 *.log
 *.key
-config_*.py
