@@ -21,7 +21,11 @@ from fastmcp.server import Context
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
-from config import *
+from config import (
+    HOME_DIR, ESI_MCP_DIR, ESI_MCP_LOG_PATH, DB_PATH,
+    METADATA_URL, CLIENT_ID, CLIENT_SECRET, CALLBACK_URL,
+    COMPATIBILITY_DATE, SCOPES,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -42,16 +46,23 @@ FERNET_KEY_PATH = ESI_MCP_DIR / "master.key"
 STATE_TTL_SECONDS = 300
 PENDING_STATES = {}
 PENDING_STATE_LOCK = threading.Lock()
+TOKEN_REFRESH_LOCK = threading.Lock()
 
 
 def _load_or_create_fernet() -> Fernet:
     env_key = os.environ.get("ESI_MCP_FERNET_KEY")
     if env_key:
-        return Fernet(env_key.encode())
+        try:
+            return Fernet(env_key.encode())
+        except Exception as e:
+            raise RuntimeError(f"ESI_MCP_FERNET_KEY environment variable is invalid: {e}")
 
     if FERNET_KEY_PATH.exists():
         key = FERNET_KEY_PATH.read_bytes().strip()
-        return Fernet(key)
+        try:
+            return Fernet(key)
+        except Exception as e:
+            raise RuntimeError(f"Fernet key at {FERNET_KEY_PATH} is corrupted: {e}")
 
     key = Fernet.generate_key()
     FERNET_KEY_PATH.write_bytes(key)
@@ -353,7 +364,7 @@ class CallbackHandler(http.server.BaseHTTPRequestHandler):
 def _start_callback_server():
     """Start the callback HTTP server in a daemon thread."""
     try:
-        server = http.server.HTTPServer(("0.0.0.0", 8080), CallbackHandler)
+        server = http.server.HTTPServer(("127.0.0.1", 8080), CallbackHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True, name="esi-callback")
         thread.start()
         logger.info("✅ Callback server started on port 8080 (auto-binding enabled)")
@@ -412,25 +423,34 @@ async def add_auth_header(request):
                 raise ValueError("No expiration time")
             expiry = datetime.fromisoformat(expiry_str)
             if expiry < datetime.now(timezone.utc):
-                # Refresh token
-                async with httpx.AsyncClient() as temp_client:
-                    token_params = {
-                        "grant_type": "refresh_token",
-                        "refresh_token": refresh_token,
-                        "client_id": CLIENT_ID,
-                    }
-                    response = await temp_client.post("https://login.eveonline.com/v2/oauth/token", data=token_params)
-                    if response.status_code != 200:
-                        logger.error(f"Failed to refresh token for character {character_id}: {response.text}")
-                        return
-                    token_data = response.json()
-                    access_token = token_data["access_token"]
-                    refresh_token = token_data.get("refresh_token", refresh_token)  # May rotate
-                    expires_in = token_data["expires_in"]
-                    expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-                    expiry_str = expiry.isoformat()
-                    update_character_tokens(character_id, access_token, refresh_token, expiry_str)
-                logger.info(f"Refreshed token for character {character_id}")
+                # Re-check after lock to avoid concurrent refresh
+                with TOKEN_REFRESH_LOCK:
+                    # Re-read tokens in case another thread already refreshed
+                    token_data = get_character_tokens(character_id)
+                    access_token, refresh_token, expiry_str = token_data
+                    expiry = datetime.fromisoformat(expiry_str) if expiry_str else None
+                    if expiry and expiry >= datetime.now(timezone.utc):
+                        logger.debug(f"Token already refreshed by another thread for {character_id}")
+                    else:
+                        # Refresh token
+                        async with httpx.AsyncClient() as temp_client:
+                            token_params = {
+                                "grant_type": "refresh_token",
+                                "refresh_token": refresh_token,
+                                "client_id": CLIENT_ID,
+                            }
+                            response = await temp_client.post("https://login.eveonline.com/v2/oauth/token", data=token_params)
+                            if response.status_code != 200:
+                                logger.error(f"Failed to refresh token for character {character_id}: {response.text}")
+                                return
+                            token_data = response.json()
+                            access_token = token_data["access_token"]
+                            refresh_token = token_data.get("refresh_token", refresh_token)  # May rotate
+                            expires_in = token_data["expires_in"]
+                            expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+                            expiry_str = expiry.isoformat()
+                            update_character_tokens(character_id, access_token, refresh_token, expiry_str)
+                        logger.info(f"Refreshed token for character {character_id}")
             logger.debug(f"Adding auth for character {character_id}: {access_token[:10]}...")
             request.headers['Authorization'] = f'Bearer {access_token}'
         except Exception as e:
@@ -439,13 +459,19 @@ async def add_auth_header(request):
 
 client.event_hooks['request'] = [add_auth_header]
 
-# Load OpenAPI spec
+# Load OpenAPI spec (lazy with error handling)
 openapi_spec_url = "https://esi.evetech.net/meta/openapi.json?compatibility_date=2025-08-26"
-openapi_spec = httpx.get(openapi_spec_url).json()
+
+def _get_openapi_spec():
+    try:
+        return httpx.get(openapi_spec_url, timeout=30).json()
+    except Exception as e:
+        logger.error(f"Failed to load ESI OpenAPI spec: {e}")
+        raise SystemExit(f"Cannot start MCP server: ESI OpenAPI spec unavailable: {e}")
 
 # Create the MCP server
 mcp = FastMCP.from_openapi(
-    openapi_spec=openapi_spec,
+    openapi_spec=_get_openapi_spec(),
     client=client,
     name="ESI MCP Server"
 )
@@ -486,46 +512,57 @@ async def add_character(ctx: Context) -> str:
         logger.error(f"Authentication failed: {e}", exc_info=True)
         return f"Authentication failed: {str(e)}"
 
+
+async def _exchange_code_and_save(code: str) -> str:
+    """Common logic: exchange OAuth code for tokens, fetch character info, save to DB."""
+    async with httpx.AsyncClient() as http_client:
+        auth_str = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
+        resp = await http_client.post(
+            "https://login.eveonline.com/v2/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": CALLBACK_URL,
+            },
+            headers={"Authorization": f"Basic {auth_str}"},
+        )
+        if resp.status_code != 200:
+            logger.error(f"Token exchange failed: {resp.text}")
+            return f"Token exchange failed: {resp.text}"
+        td = resp.json()
+        at = td["access_token"]
+        rt = td.get("refresh_token", "")
+        ei = td.get("expires_in", 1199)
+        # Get character info from JWT
+        parts = at.split(".")
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
+        sub = payload.get("sub", "")
+        cid = int(sub.split(":")[-1]) if ":" in sub else 0
+        cname = payload.get("name", "Unknown")
+        # Fetch full character name
+        cr = await http_client.get(
+            f"https://esi.evetech.net/latest/characters/{cid}/",
+            headers={"Authorization": f"Bearer {at}"},
+        )
+        if cr.status_code == 200:
+            cname = cr.json().get("name", cname)
+        # Save to DB
+        token_expiry = (datetime.now(timezone.utc) + timedelta(seconds=ei)).isoformat()
+        save_character(cid, cname, " ".join(SCOPES), at, rt, token_expiry)
+        if not get_default_character_id():
+            set_default_character_id(cid)
+        return f"Success: {cname} (ID: {cid})"
+
+
 @mcp.tool
 async def auth_with_code(code: str) -> str:
     """Exchange an OAuth authorization code for tokens. Use this when you already have the code from the browser redirect."""
-    logger.debug(f"auth_with_code: starting exchange")
+    logger.debug("auth_with_code: starting exchange")
     try:
-        async with httpx.AsyncClient() as client:
-            auth_str = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
-            resp = await client.post(
-                "https://login.eveonline.com/v2/oauth/token",
-                data={
-                    "grant_type": "authorization_code",
-                    "code": code,
-                    "redirect_uri": CALLBACK_URL,
-                },
-                headers={"Authorization": f"Basic {auth_str}"},
-            )
-            if resp.status_code != 200:
-                logger.error(f"Token exchange failed: {resp.text}")
-                return f"Token exchange failed: {resp.text}"
-            td = resp.json()
-            at = td["access_token"]
-            rt = td.get("refresh_token", "")
-            ei = td.get("expires_in", 1199)
-            # Get character info from JWT
-            parts = at.split(".")
-            payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
-            sub = payload.get("sub", "")
-            cid = int(sub.split(":")[-1]) if ":" in sub else 0
-            cname = payload.get("name", "Unknown")
-            # Get full character info
-            cr = await client.get(f"https://esi.evetech.net/latest/characters/{cid}/",
-                headers={"Authorization": f"Bearer {at}"})
-            if cr.status_code == 200:
-                cname = cr.json().get("name", cname)
-            # Save
-            token_expiry = (datetime.now(timezone.utc) + timedelta(seconds=ei)).isoformat()
-            save_character(cid, cname, " ".join(SCOPES), at, rt, token_expiry)
-            if not get_default_character_id():
-                set_default_character_id(cid)
-            return f"Authenticated: {cname} (ID: {cid})"
+        return await _exchange_code_and_save(code)
+    except Exception as e:
+        logger.error(f"auth_with_code failed: {e}", exc_info=True)
+        return f"Authentication failed: {str(e)}"
     except Exception as e:
         logger.error(f"auth_with_code failed: {e}", exc_info=True)
         return f"Authentication failed: {str(e)}"

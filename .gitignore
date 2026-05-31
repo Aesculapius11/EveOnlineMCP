@@ -2,3 +2,7 @@
 .venv
 __pycache__
 config.py
+config_corp_monitor.py
+*.db
+*.log
+*.key

@@ -137,3 +137,4 @@ For more details on EVE Online ESI, visit the [official documentation](https://d
   - Simplified dependency and auth logic by removing no longer used PKCE generation and old OAuth proxy code.
   - Added state validation for the OAuth callback flow.
   - Encrypted access and refresh tokens before saving to SQLite.
+---
