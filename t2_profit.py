@@ -207,7 +207,7 @@ def get_market_prices(type_ids):
                     break
                 elif page == 1 and orders:
                     sell_min = min(o['price'] for o in orders)
-            except:
+            except Exception:
                 break
 
         # 买单
@@ -223,12 +223,12 @@ def get_market_prices(type_ids):
                     break
                 elif page == 1 and orders:
                     buy_max = max(o['price'] for o in orders)
-            except:
+            except Exception:
                 break
 
         return tid, {"sell_min": sell_min, "buy_max": buy_max}
 
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {ex.submit(fetch_one, tid): tid for tid in to_fetch}
         for f in as_completed(futures):
             tid, prices = f.result()

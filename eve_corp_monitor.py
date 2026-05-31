@@ -76,18 +76,16 @@ except ImportError:
 # Token decryption (from esi.py Fernet encryption)
 try:
     from cryptography.fernet import Fernet
+    _fernet_key = Path(FERNET_KEY_PATH).read_bytes().strip()
+    _fernet = Fernet(_fernet_key)
     def _decrypt_token(encrypted: str) -> str:
         if encrypted is None:
             return None
-        try:
-            key = Path(FERNET_KEY_PATH).read_bytes().strip()
-            fn = Fernet(key)
-            return fn.decrypt(encrypted.encode()).decode()
-        except Exception:
-            return encrypted  # plaintext fallback
+        return _fernet.decrypt(encrypted.encode()).decode()
 except ImportError:
-    def _decrypt_token(encrypted: str) -> str:
-        return encrypted
+    raise SystemExit("cryptography not installed. pip install cryptography")
+except Exception as e:
+    raise SystemExit(f"Failed to load Fernet key from {FERNET_KEY_PATH}: {e}")
 
 BASE_ESI = "https://esi.evetech.net"
 TOKEN_URL = "https://login.eveonline.com/v2/oauth/token"
@@ -105,16 +103,16 @@ class EsiClient:
     def _load_token(self) -> str:
         if not os.path.exists(DB_PATH):
             raise SystemExit(f"DB not found: {DB_PATH}. Run auth first.")
-        conn = __import__("sqlite3").connect(DB_PATH)
-        row = conn.execute("SELECT value FROM settings WHERE key='default_character_id'").fetchone()
-        if not row:
-            raise SystemExit("No default character in DB. Run auth first.")
-        cid = int(row[0])
-        row = conn.execute(
-            "SELECT access_token, refresh_token, token_expiry FROM characters WHERE character_id=?",
-            (cid,)
-        ).fetchone()
-        conn.close()
+        import sqlite3
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='default_character_id'").fetchone()
+            if not row:
+                raise SystemExit("No default character in DB. Run auth first.")
+            cid = int(row[0])
+            row = conn.execute(
+                "SELECT access_token, refresh_token, token_expiry FROM characters WHERE character_id=?",
+                (cid,)
+            ).fetchone()
         if not row:
             raise SystemExit(f"No token for character {cid}.")
 
@@ -140,11 +138,11 @@ class EsiClient:
         at = d["access_token"]
         rt_new = d.get("refresh_token", rt)
         expiry = (datetime.now(timezone.utc) + timedelta(seconds=d["expires_in"])).isoformat()
-        conn = __import__("sqlite3").connect(DB_PATH)
-        conn.execute("UPDATE characters SET access_token=?, refresh_token=?, token_expiry=? WHERE character_id=?",
-                     (at, rt_new, expiry, cid))
-        conn.commit()
-        conn.close()
+        import sqlite3
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("UPDATE characters SET access_token=?, refresh_token=?, token_expiry=? WHERE character_id=?",
+                         (_fernet.encrypt(at.encode()).decode(), _fernet.encrypt(rt_new.encode()).decode(), expiry, cid))
+            conn.commit()
         print("  [auth] Token refreshed ✓")
         return at
 
